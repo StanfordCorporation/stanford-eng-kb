@@ -1,0 +1,371 @@
+import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import './App.css'
+
+type Source = { n: number; source: string; score: number }
+
+type Turn =
+  | { role: 'user'; content: string }
+  | {
+      role: 'assistant'
+      content: string
+      sources: Source[]
+      rewrittenQuery?: string | null
+      phase: 'retrieving' | 'streaming' | 'done' | 'error'
+      error?: string
+    }
+
+type Thread = {
+  id: string
+  title: string
+  turns: Turn[]
+  updatedAt: number
+}
+
+type StreamEvent =
+  | { type: 'sources'; sources: Source[]; rewritten_query?: string | null }
+  | { type: 'delta'; text: string }
+  | { type: 'done' }
+
+const STORAGE_KEY = 'stanford-kb-threads-v1'
+const THEME_KEY = 'stanford-kb-theme'
+
+type Theme = 'light' | 'dark'
+
+function initialTheme(): Theme {
+  const saved = localStorage.getItem(THEME_KEY) as Theme | null
+  if (saved === 'light' || saved === 'dark') return saved
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function newThreadId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function blankThread(): Thread {
+  return { id: newThreadId(), title: 'New chat', turns: [], updatedAt: Date.now() }
+}
+
+function loadThreads(): Thread[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as Thread[]
+    // Reset any in-flight assistant turns — a stream that was mid-flight on refresh is lost.
+    return parsed.map((t) => ({
+      ...t,
+      turns: t.turns.map((tn) =>
+        tn.role === 'assistant' && (tn.phase === 'retrieving' || tn.phase === 'streaming')
+          ? { ...tn, phase: 'error', error: 'Interrupted' }
+          : tn,
+      ),
+    }))
+  } catch {
+    return []
+  }
+}
+
+function deriveTitle(turns: Turn[]): string {
+  const first = turns.find((t) => t.role === 'user')
+  if (!first) return 'New chat'
+  const text = first.content.trim().replace(/\s+/g, ' ')
+  return text.length > 40 ? text.slice(0, 40) + '…' : text
+}
+
+export default function App() {
+  const [query, setQuery] = useState('')
+  const [threads, setThreads] = useState<Thread[]>(() => {
+    const loaded = loadThreads()
+    return loaded.length ? loaded : [blankThread()]
+  })
+  const [activeId, setActiveId] = useState<string>(() => threads[0]?.id ?? '')
+  const [theme, setTheme] = useState<Theme>(() => initialTheme())
+  const threadRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem(THEME_KEY, theme)
+  }, [theme])
+
+  const active = threads.find((t) => t.id === activeId) ?? threads[0]
+  const turns = active?.turns ?? []
+  const lastTurn = turns[turns.length - 1]
+  const busy =
+    lastTurn?.role === 'assistant' &&
+    (lastTurn.phase === 'retrieving' || lastTurn.phase === 'streaming')
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(threads))
+  }, [threads])
+
+  useEffect(() => {
+    const el = threadRef.current
+    if (!el || !stickToBottomRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [turns])
+
+  function onThreadScroll() {
+    const el = threadRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
+    stickToBottomRef.current = distanceFromBottom < 80
+  }
+
+  function updateActive(updater: (turns: Turn[]) => Turn[]) {
+    setThreads((prev) =>
+      prev.map((t) =>
+        t.id === activeId
+          ? { ...t, turns: updater(t.turns), updatedAt: Date.now(), title: deriveTitle(updater(t.turns)) }
+          : t,
+      ),
+    )
+  }
+
+  function updateAssistant(updater: (t: Turn & { role: 'assistant' }) => Turn) {
+    updateActive((prev) => {
+      const next = [...prev]
+      const i = next.length - 1
+      if (i >= 0 && next[i].role === 'assistant') {
+        next[i] = updater(next[i] as Turn & { role: 'assistant' })
+      }
+      return next
+    })
+  }
+
+  function startNewThread() {
+    if (busy) return
+    const existingEmpty = threads.find((t) => t.turns.length === 0)
+    if (existingEmpty) {
+      setActiveId(existingEmpty.id)
+      return
+    }
+    const t = blankThread()
+    setThreads((prev) => [t, ...prev])
+    setActiveId(t.id)
+    setQuery('')
+    stickToBottomRef.current = true
+  }
+
+  function deleteThread(id: string) {
+    setThreads((prev) => {
+      const remaining = prev.filter((t) => t.id !== id)
+      if (remaining.length === 0) {
+        const fresh = blankThread()
+        setActiveId(fresh.id)
+        return [fresh]
+      }
+      if (id === activeId) setActiveId(remaining[0].id)
+      return remaining
+    })
+  }
+
+  async function submit() {
+    const q = query.trim()
+    if (!q || busy || !active) return
+
+    const history = active.turns
+      .filter((t) => t.role === 'user' || (t.role === 'assistant' && t.phase === 'done'))
+      .map((t) => ({ role: t.role, content: t.content }))
+
+    const newMessages = [...history, { role: 'user' as const, content: q }]
+
+    updateActive((prev) => [
+      ...prev,
+      { role: 'user', content: q },
+      { role: 'assistant', content: '', sources: [], phase: 'retrieving' },
+    ])
+    setQuery('')
+    stickToBottomRef.current = true
+
+    try {
+      const res = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: newMessages, k: 5 }),
+      })
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let acc = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        let sep: number
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, sep)
+          buffer = buffer.slice(sep + 2)
+          if (!frame.startsWith('data: ')) continue
+
+          const event: StreamEvent = JSON.parse(frame.slice(6))
+          if (event.type === 'sources') {
+            updateAssistant((t) => ({
+              ...t,
+              sources: event.sources,
+              rewrittenQuery: event.rewritten_query ?? null,
+              phase: 'streaming',
+            }))
+          } else if (event.type === 'delta') {
+            acc += event.text
+            updateAssistant((t) => ({ ...t, content: acc }))
+          } else if (event.type === 'done') {
+            updateAssistant((t) => ({ ...t, phase: 'done' }))
+          }
+        }
+      }
+    } catch (err) {
+      updateAssistant((t) => ({
+        ...t,
+        phase: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      }))
+    }
+  }
+
+  const sortedThreads = [...threads].sort((a, b) => b.updatedAt - a.updatedAt)
+
+  return (
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <button className="new-chat" onClick={startNewThread} disabled={busy}>
+            + New chat
+          </button>
+        </div>
+        <nav className="thread-list">
+          {sortedThreads.map((t) => (
+            <div
+              key={t.id}
+              className={`thread-item ${t.id === activeId ? 'active' : ''}`}
+              onClick={() => setActiveId(t.id)}
+            >
+              <span className="thread-title">{t.title}</span>
+              <button
+                className="thread-delete"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  deleteThread(t.id)
+                }}
+                aria-label="Delete chat"
+                title="Delete chat"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="app">
+        <header>
+          <h1>Stanford Knowledge Base</h1>
+          <button
+            className="theme-toggle"
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+          >
+            {theme === 'light' ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+              </svg>
+            )}
+          </button>
+        </header>
+
+        <div ref={threadRef} className="thread" onScroll={onThreadScroll}>
+          {turns.length === 0 && (
+            <div className="hint">
+              Ask something about your vault. Follow-up questions see prior turns.
+            </div>
+          )}
+
+          {turns.map((t, i) =>
+            t.role === 'user' ? (
+              <div key={i} className="turn user">
+                <div className="bubble">{t.content}</div>
+              </div>
+            ) : (
+              <div key={i} className="turn assistant">
+                <div className="label">
+                  {t.phase === 'retrieving' && 'Searching vault…'}
+                  {t.phase === 'streaming' && 'Claude'}
+                  {t.phase === 'done' && 'Claude'}
+                  {t.phase === 'error' && 'Error'}
+                </div>
+
+                {t.phase === 'error' ? (
+                  <div className="error">{t.error}</div>
+                ) : (
+                  <>
+                    <div className="md">
+                      <ReactMarkdown>{t.content}</ReactMarkdown>
+                      {t.phase === 'streaming' && <span className="caret" />}
+                    </div>
+
+                    {t.sources.length > 0 && (
+                      <details className="sources-details">
+                        <summary>
+                          {t.sources.length} source{t.sources.length === 1 ? '' : 's'}
+                        </summary>
+                        {t.rewrittenQuery && (
+                          <div className="rewritten">
+                            Searched for: <em>{t.rewrittenQuery}</em>
+                          </div>
+                        )}
+                        <ol className="sources">
+                          {t.sources.map((s) => (
+                            <li key={s.n}>
+                              <code>{s.source}</code>
+                              <span className="score">{s.score.toFixed(4)}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </details>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          )}
+        </div>
+
+        <form
+          className="composer"
+          onSubmit={(e) => {
+            e.preventDefault()
+            submit()
+          }}
+        >
+          <textarea
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={
+              turns.length === 0 ? 'Ask something…' : 'Follow up… (⌘/Ctrl + Enter to send)'
+            }
+            rows={2}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+          />
+          <button type="submit" disabled={busy || !query.trim()}>
+            {busy ? '…' : 'Send'}
+          </button>
+        </form>
+      </main>
+    </div>
+  )
+}
