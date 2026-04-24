@@ -77,8 +77,8 @@ To wire the MCP server into Claude Desktop, add to its `mcpServers` config:
 ```json
 {
   "stanford-eng-kb": {
-    "command": "c:/Users/AkshitMahajanStanfor/stanford-innovations/stanford-eng-kb/.venv/Scripts/python.exe",
-    "args": ["c:/Users/AkshitMahajanStanfor/stanford-innovations/stanford-eng-kb/vault/app/expose_mcp.py"]
+    "command": "/.venv/Scripts/python.exe",
+    "args": ["/vault/app/expose_mcp.py"]
   }
 }
 ```
