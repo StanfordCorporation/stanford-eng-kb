@@ -24,8 +24,7 @@ A minimal RAG pipeline over an Obsidian vault:
 ```
 stanford-eng-kb/
 ├── .env.example              # copy to .env for local dev
-├── .github/workflows/
-│   └── deploy.yml            # CI/CD (frontend-only Vercel deploy)
+├── .dockerignore
 ├── .vercelignore
 ├── api/
 │   └── index.py              # FastAPI ASGI app (run with uvicorn)
@@ -44,8 +43,10 @@ stanford-eng-kb/
 ├── frontEnd/                 # React/Vite SPA
 ├── sql/schema.sql            # run once in Supabase SQL Editor
 ├── vault/                    # your Obsidian notes (local-only)
+├── Dockerfile                # Railway image (backend)
+├── railway.json              # Railway build/deploy config
 ├── requirements.txt
-└── vercel.json
+└── vercel.json               # Vercel static-build config (frontend)
 ```
 
 ## Setup
