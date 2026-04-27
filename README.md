@@ -91,12 +91,11 @@ MCP config for Claude Desktop:
 ```json
 {
   "stanford-eng-kb": {
-    "command": "c:/Users/AkshitMahajanStanfor/stanford-innovations/stanford-eng-kb/.venv/Scripts/python.exe",
+    "command": "[PATH]/stanford-eng-kb/.venv/Scripts/python.exe",
     "args": ["-m", "backend.expose_mcp"],
-    "cwd": "c:/Users/AkshitMahajanStanfor/stanford-innovations/stanford-eng-kb"
+    "cwd": "[PATH]/stanford-eng-kb"
   }
 }
-```
 
 ## Deploy
 
