@@ -19,6 +19,12 @@ COPY requirements.txt .
 # Build-time only — no runtime impact, so kept out of requirements.txt.
 RUN pip install -r requirements.txt && pip install hf_transfer
 
+# Optional: authenticate HF downloads during the build for higher rate limits.
+# Set HF_TOKEN as a regular variable on Railway (Service → Variables); this ARG
+# pulls it into the build environment so the RUN below sees it.
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
 # Pre-download MiniLM weights into the HF cache (~/.cache/huggingface/hub).
 # Retries up to 3 times so a flaky HF response during the Railway build doesn't
 # kill the whole deploy. snapshot_download is HF's lower-level, retry-friendly
