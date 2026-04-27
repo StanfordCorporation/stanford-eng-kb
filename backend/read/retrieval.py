@@ -1,4 +1,9 @@
-"""Hybrid search: vector + full-text, merged with Reciprocal Rank Fusion."""
+"""Hybrid search: vector + full-text, merged with Reciprocal Rank Fusion.
+
+Multi-tenancy: queries MUST pass `org_id` to scope results to one tenant.
+Passing `org_id=None` disables the filter — only safe for admin / internal use,
+never on a customer-facing path.
+"""
 
 from backend.shared.connection import get_conn
 from backend.shared.embedder import embed_query
@@ -7,35 +12,60 @@ from backend.shared.embedder import embed_query
 RRF_K = 60
 
 
-def hybrid_search(query: str, k: int = 5, pool: int = 20):
-    vector = embed_query(query)
+def _tenant_filter(org_id: str | None, sub_id: str | None) -> tuple[str, tuple]:
+    """Build a SQL fragment + params for the org/sub WHERE conditions."""
+    clauses: list[str] = []
+    params: list = []
+    if org_id is not None:
+        clauses.append("metadata->>'org_id' = %s")
+        params.append(org_id)
+    if sub_id is not None:
+        clauses.append("metadata->>'sub_id' = %s")
+        params.append(sub_id)
+    return " and ".join(clauses), tuple(params)
 
-    # Fresh connection per call — Supavisor closes idle connections, so a long-lived
-    # one breaks on the next request. Cost is negligible at our QPS.
+
+def hybrid_search(
+    query: str,
+    k: int = 5,
+    pool: int = 20,
+    *,
+    org_id: str | None = None,
+    sub_id: str | None = None,
+):
+    vector = embed_query(query)
+    tenant_sql, tenant_params = _tenant_filter(org_id, sub_id)
+
+    vector_where = f"where {tenant_sql}" if tenant_sql else ""
+    fts_where_clauses = [*([tenant_sql] if tenant_sql else []),
+                         "to_tsvector('english', content) @@ plainto_tsquery('english', %s)"]
+    fts_where = "where " + " and ".join(fts_where_clauses)
+
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             select id, content, metadata,
                    1 - (embedding <=> %s::vector) as similarity
             from documents
+            {vector_where}
             order by embedding <=> %s::vector
             limit %s
             """,
-            (vector, vector, pool),
+            (vector, *tenant_params, vector, pool),
         )
         vector_hits = cur.fetchall()
 
         cur.execute(
-            """
+            f"""
             select id, content, metadata,
                    ts_rank_cd(to_tsvector('english', content),
                               plainto_tsquery('english', %s)) as rank
             from documents
-            where to_tsvector('english', content) @@ plainto_tsquery('english', %s)
+            {fts_where}
             order by rank desc
             limit %s
             """,
-            (query, query, pool),
+            (query, *tenant_params, query, pool),
         )
         keyword_hits = cur.fetchall()
 
@@ -67,6 +97,7 @@ def hybrid_search(query: str, k: int = 5, pool: int = 20):
 
 if __name__ == "__main__":
     import sys
+
     q = " ".join(sys.argv[1:]) or "what is this vault about?"
     for hit in hybrid_search(q):
         print(f"[{hit['score']:.4f}] {hit['metadata'].get('source')}")

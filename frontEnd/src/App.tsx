@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import AddToKB from './AddToKB'
+import { API_BASE, ORGS } from './lib'
 import './App.css'
 
 type Source = { n: number; source: string; score: number }
@@ -30,13 +31,24 @@ type StreamEvent =
 
 const STORAGE_KEY = 'stanford-kb-threads-v1'
 const THEME_KEY = 'stanford-kb-theme'
-
-// Empty in dev (Vite proxies /api/* to the local backend); in prod, set VITE_API_URL
-// at build time on Vercel to the Railway backend URL (no trailing slash).
-const API_BASE = import.meta.env.VITE_API_URL ?? ''
+const ACTIVE_ORG_KEY = 'stanford-kb-active-org'
+const ACTIVE_SUB_KEY = 'stanford-kb-active-sub'
 
 type Theme = 'light' | 'dark'
 type View = 'chat' | 'add-kb'
+
+function initialActiveOrg(): string {
+  const saved = localStorage.getItem(ACTIVE_ORG_KEY)
+  if (saved && ORGS.some((o) => o.id === saved)) return saved
+  return ORGS[0].id
+}
+
+function initialActiveSub(orgId: string): string | null {
+  const saved = localStorage.getItem(ACTIVE_SUB_KEY)
+  const org = ORGS.find((o) => o.id === orgId)
+  if (saved && org?.subs.some((s) => s.id === saved)) return saved
+  return null
+}
 
 function initialTheme(): Theme {
   const saved = localStorage.getItem(THEME_KEY) as Theme | null
@@ -87,6 +99,8 @@ export default function App() {
   const [activeId, setActiveId] = useState<string>(() => threads[0]?.id ?? '')
   const [theme, setTheme] = useState<Theme>(() => initialTheme())
   const [view, setView] = useState<View>('chat')
+  const [activeOrg, setActiveOrg] = useState<string>(() => initialActiveOrg())
+  const [activeSub, setActiveSub] = useState<string | null>(() => initialActiveSub(initialActiveOrg()))
   const threadRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
@@ -94,6 +108,17 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem(THEME_KEY, theme)
   }, [theme])
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_ORG_KEY, activeOrg)
+  }, [activeOrg])
+
+  useEffect(() => {
+    if (activeSub) localStorage.setItem(ACTIVE_SUB_KEY, activeSub)
+    else localStorage.removeItem(ACTIVE_SUB_KEY)
+  }, [activeSub])
+
+  const activeOrgObj = ORGS.find((o) => o.id === activeOrg) ?? ORGS[0]
 
   const active = threads.find((t) => t.id === activeId) ?? threads[0]
   const turns = active?.turns ?? []
@@ -190,7 +215,12 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages, k: 5 }),
+        body: JSON.stringify({
+          messages: newMessages,
+          k: 5,
+          org_id: activeOrg,
+          sub_id: activeSub,
+        }),
       })
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
 
@@ -250,6 +280,38 @@ export default function App() {
           >
             + Add to KB
           </button>
+
+          <div className="org-selector">
+            <label className="org-selector-label">Active KB</label>
+            <select
+              className="org-selector-input"
+              value={activeOrg}
+              onChange={(e) => {
+                setActiveOrg(e.target.value)
+                setActiveSub(null)
+              }}
+            >
+              {ORGS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+            {activeOrgObj.subs.length > 0 && (
+              <select
+                className="org-selector-input"
+                value={activeSub ?? ''}
+                onChange={(e) => setActiveSub(e.target.value || null)}
+              >
+                <option value="">All groups</option>
+                {activeOrgObj.subs.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
         <nav className="thread-list">
           {sortedThreads.map((t) => (

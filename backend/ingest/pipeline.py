@@ -1,69 +1,74 @@
-"""End-to-end ingest: load documents → chunk → embed → upsert into Postgres.
+"""One-shot bulk-upload CLI for seeding a folder of files into a single
+(org, sub) silo. Hits the live /api/ingest/upload endpoint — the same path
+customers use — so there is no privileged direct-DB ingest in the system.
 
-Run locally:
+NOT used by the deployed backend. Run from your laptop after the API is up:
 
-    python -m backend.ingest.pipeline
+    set API_URL=https://<railway-url>          # or http://127.0.0.1:8000 for local
+    set INGEST_TOKEN=<your token>
+    python -m backend.ingest.pipeline ./path/to/folder stanford-innovations technology
 
-Reads SUPABASE_DB_*, ANTHROPIC_API_KEY, and VAULT_PATH from .env.
+Walks the folder recursively, uploads every supported file, prints a summary.
 """
 
 import os
+import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-from psycopg2.extras import Json, execute_batch
+import httpx
 
-from backend.shared.connection import get_conn
-from backend.shared.embedder import embed_documents
-
-from .chunker import Chunk, chunk_text
-from .vault_loader import LocalVaultLoader, VaultLoader
-
-load_dotenv()
+from .extractors import SUPPORTED_EXTENSIONS
 
 
-def _chunk_all(loader: VaultLoader) -> list[Chunk]:
-    chunks: list[Chunk] = []
-    for doc in loader.iter_documents():
-        chunks.extend(chunk_text(doc.text, source=doc.source))
-    return chunks
+def main(folder: str, org_id: str, sub_id: str) -> None:
+    api_url = os.environ.get("API_URL", "http://127.0.0.1:8000").rstrip("/")
+    token = os.environ.get("INGEST_TOKEN")
+    if not token:
+        sys.exit("INGEST_TOKEN env var is required")
 
+    root = Path(folder)
+    if not root.is_dir():
+        sys.exit(f"not a directory: {root}")
 
-def upsert_chunks(chunks: list[Chunk]) -> int:
-    if not chunks:
-        return 0
+    endpoint = f"{api_url}/api/ingest/upload"
+    headers = {"X-Ingest-Token": token}
 
-    vectors = embed_documents([c.content for c in chunks])
-    rows = [
-        (c.source, c.chunk_idx, c.content, Json(c.metadata), v)
-        for c, v in zip(chunks, vectors)
-    ]
+    files = sorted(
+        p
+        for ext in SUPPORTED_EXTENSIONS
+        for p in root.rglob(f"*{ext}")
+    )
+    if not files:
+        sys.exit(f"no supported files under {root}")
 
-    with get_conn() as conn, conn.cursor() as cur:
-        execute_batch(
-            cur,
-            """
-            insert into documents (source, chunk_idx, content, metadata, embedding)
-            values (%s, %s, %s, %s, %s)
-            on conflict on constraint documents_source_chunk_uq
-            do update set
-                content   = excluded.content,
-                metadata  = excluded.metadata,
-                embedding = excluded.embedding
-            """,
-            rows,
-            page_size=100,
-        )
-        conn.commit()
-    return len(rows)
+    print(f"Uploading {len(files)} files → {endpoint}")
+    succeeded = 0
+    failed: list[tuple[Path, str]] = []
 
+    with httpx.Client(timeout=120) as client:
+        for path in files:
+            rel = path.relative_to(root)
+            with path.open("rb") as fh:
+                resp = client.post(
+                    endpoint,
+                    headers=headers,
+                    data={"org_id": org_id, "sub_id": sub_id},
+                    files={"file": (path.name, fh, "application/octet-stream")},
+                )
+            if resp.is_success:
+                data = resp.json()
+                print(f"  ok  {rel}  ({data['chunks']} chunks)")
+                succeeded += 1
+            else:
+                print(f"  err {rel}  ({resp.status_code} {resp.text})")
+                failed.append((rel, resp.text))
 
-def run_ingest(loader: VaultLoader) -> int:
-    return upsert_chunks(_chunk_all(loader))
+    print(f"\nDone: {succeeded} ok, {len(failed)} failed")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    vault_path = Path(os.environ["VAULT_PATH"])
-    loader = LocalVaultLoader(vault_path)
-    n = run_ingest(loader)
-    print(f"Upserted {n} chunks from {vault_path}")
+    if len(sys.argv) != 4:
+        sys.exit("usage: python -m backend.ingest.pipeline <folder> <org_id> <sub_id>")
+    main(sys.argv[1], sys.argv[2], sys.argv[3])

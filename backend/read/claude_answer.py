@@ -70,8 +70,8 @@ def _sources(hits):
     ]
 
 
-def answer(query: str, k: int = 5) -> dict:
-    hits = hybrid_search(query, k=k)
+def answer(query: str, k: int = 5, *, org_id: str | None = None, sub_id: str | None = None) -> dict:
+    hits = hybrid_search(query, k=k, org_id=org_id, sub_id=sub_id)
     res = client.messages.create(
         model=MODEL,
         max_tokens=1000,
@@ -80,9 +80,9 @@ def answer(query: str, k: int = 5) -> dict:
     return {"answer": res.content[0].text, "sources": _sources(hits)}
 
 
-def stream_answer(query: str, k: int = 5):
+def stream_answer(query: str, k: int = 5, *, org_id: str | None = None, sub_id: str | None = None):
     """Generator of event dicts: sources (once), delta (many), done (once)."""
-    hits = hybrid_search(query, k=k)
+    hits = hybrid_search(query, k=k, org_id=org_id, sub_id=sub_id)
     yield {"type": "sources", "sources": _sources(hits)}
 
     with client.messages.stream(
@@ -106,15 +106,22 @@ Context for the latest question:
 {context}"""
 
 
-def stream_chat(messages: list[dict], k: int = 5):
+def stream_chat(
+    messages: list[dict],
+    k: int = 5,
+    *,
+    org_id: str | None = None,
+    sub_id: str | None = None,
+):
     """Multi-turn chat. `messages` follows Anthropic's format; last role must be 'user'.
-    Retrieval runs fresh against the latest user turn each call."""
+    Retrieval runs fresh against the latest user turn each call.
+    Pass org_id (and optionally sub_id) so retrieval is scoped to one tenant."""
     if not messages or messages[-1].get("role") != "user":
         raise ValueError("messages must be non-empty and end with a user turn")
 
     latest = messages[-1]["content"]
     search_query = rewrite_query(messages)
-    hits = hybrid_search(search_query, k=k)
+    hits = hybrid_search(search_query, k=k, org_id=org_id, sub_id=sub_id)
     yield {
         "type": "sources",
         "sources": _sources(hits),

@@ -1,42 +1,13 @@
 import { useState } from 'react'
 
-type SubGroup = { id: string; name: string }
-type Org = {
-  id: string
-  name: string
-  description: string
-  subs: SubGroup[]
-}
-
-const ORGS: Org[] = [
-  {
-    id: 'stanford-legal',
-    name: 'Stanford Legal',
-    description: 'Legal practice covering property, family, and estate matters.',
-    subs: [
-      { id: 'property-law', name: 'Property Law Firm' },
-      { id: 'family-law', name: 'Family Law' },
-      { id: 'wills-estate', name: 'Wills & Estate Law' },
-    ],
-  },
-  {
-    id: 'stanford-finance',
-    name: 'Stanford Finance',
-    description: 'Financial services across mortgage and broking.',
-    subs: [{ id: 'mortgage-broking', name: 'Mortgage & Broking Firm' }],
-  },
-  {
-    id: 'stanford-innovations',
-    name: 'Stanford Innovations',
-    description: 'Internal R&D — technology and marketing.',
-    subs: [
-      { id: 'technology', name: 'Technology' },
-      { id: 'marketing', name: 'Marketing' },
-    ],
-  },
-]
+import { API_BASE, INGEST_TOKEN, ORGS } from './lib'
 
 type Mode = 'file' | 'text'
+type Status =
+  | { kind: 'idle' }
+  | { kind: 'submitting' }
+  | { kind: 'success'; chunks: number; characters: number }
+  | { kind: 'error'; message: string }
 
 export default function AddToKB() {
   const [orgId, setOrgId] = useState<string | null>(null)
@@ -45,20 +16,21 @@ export default function AddToKB() {
   const [text, setText] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [status, setStatus] = useState<Status>({ kind: 'idle' })
 
   const org = ORGS.find((o) => o.id === orgId) ?? null
   const sub = org?.subs.find((s) => s.id === subId) ?? null
+  const submitting = status.kind === 'submitting'
 
   function selectOrg(id: string) {
     setOrgId(id)
     setSubId(null)
-    setNotice(null)
+    setStatus({ kind: 'idle' })
   }
 
   function selectSub(id: string) {
     setSubId(id)
-    setNotice(null)
+    setStatus({ kind: 'idle' })
   }
 
   function onDrop(e: React.DragEvent<HTMLDivElement>) {
@@ -68,12 +40,46 @@ export default function AddToKB() {
     if (f) setFile(f)
   }
 
-  function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
-    setNotice('UI scaffolded — upload pipeline not yet wired up.')
+    if (!org || !sub || submitting) return
+
+    const form = new FormData()
+    form.append('org_id', org.id)
+    form.append('sub_id', sub.id)
+    if (mode === 'file' && file) {
+      form.append('file', file)
+    } else if (mode === 'text' && text.trim()) {
+      form.append('text', text)
+    } else {
+      return
+    }
+
+    setStatus({ kind: 'submitting' })
+    try {
+      const res = await fetch(`${API_BASE}/api/ingest/upload`, {
+        method: 'POST',
+        headers: INGEST_TOKEN ? { 'X-Ingest-Token': INGEST_TOKEN } : {},
+        body: form,
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(`HTTP ${res.status}: ${detail}`)
+      }
+      const data = (await res.json()) as { chunks: number; characters: number }
+      setStatus({ kind: 'success', chunks: data.chunks, characters: data.characters })
+      setFile(null)
+      setText('')
+    } catch (err) {
+      setStatus({
+        kind: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
-  const canSubmit = !!sub && (mode === 'file' ? !!file : text.trim().length > 0)
+  const canSubmit =
+    !!sub && !submitting && (mode === 'file' ? !!file : text.trim().length > 0)
 
   return (
     <div className="add-kb-body">
@@ -185,11 +191,19 @@ export default function AddToKB() {
                 Adding to <strong>{org!.name}</strong> · <strong>{sub.name}</strong>
               </div>
               <button type="submit" className="primary-btn" disabled={!canSubmit}>
-                Add to knowledge base
+                {submitting ? 'Uploading…' : 'Add to knowledge base'}
               </button>
             </div>
 
-            {notice && <div className="add-kb-notice">{notice}</div>}
+            {status.kind === 'success' && (
+              <div className="add-kb-notice success">
+                Added {status.chunks} chunks ({status.characters.toLocaleString()} characters)
+                to <strong>{org!.name}</strong> · <strong>{sub.name}</strong>.
+              </div>
+            )}
+            {status.kind === 'error' && (
+              <div className="add-kb-notice error">Upload failed — {status.message}</div>
+            )}
           </form>
         </section>
       )}
