@@ -1,0 +1,30 @@
+# Local-only state
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Frontend (deployed separately on Vercel)
+frontEnd/
+node_modules/
+
+# Obsidian vault (ingested separately, never needed in the runtime image)
+vault/
+
+# DB schema (run manually in Supabase SQL editor)
+sql/
+
+# Vercel artifacts (deployed elsewhere)
+vercel.json
+.vercelignore
+
+# VCS / editor / docs
+.git/
+.github/
+.vscode/
+.idea/
+README.md

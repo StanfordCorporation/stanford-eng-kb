@@ -1,7 +1,7 @@
 """Hybrid search: vector + full-text, merged with Reciprocal Rank Fusion."""
 
-from connection import get_conn
-from embedder import embed_query
+from backend.shared.connection import get_conn
+from backend.shared.embedder import embed_query
 
 # RRF constant — 60 is the value from the original Cormack/Clarke paper.
 RRF_K = 60

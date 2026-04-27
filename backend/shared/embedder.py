@@ -3,6 +3,9 @@
 Model: all-MiniLM-L6-v2 (384-dim, small, fast). Matches vector(384) in schema.sql.
 First import downloads ~90 MB model weights into the HF cache; subsequent runs
 load from disk.
+
+Used by both read (query embedding) and ingest (document embedding) — they MUST
+stay on the same model so the vectors are comparable.
 """
 
 from functools import lru_cache

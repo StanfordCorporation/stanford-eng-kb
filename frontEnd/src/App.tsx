@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import AddToKB from './AddToKB'
 import './App.css'
 
 type Source = { n: number; source: string; score: number }
@@ -30,7 +31,12 @@ type StreamEvent =
 const STORAGE_KEY = 'stanford-kb-threads-v1'
 const THEME_KEY = 'stanford-kb-theme'
 
+// Empty in dev (Vite proxies /api/* to the local backend); in prod, set VITE_API_URL
+// at build time on Vercel to the Railway backend URL (no trailing slash).
+const API_BASE = import.meta.env.VITE_API_URL ?? ''
+
 type Theme = 'light' | 'dark'
+type View = 'chat' | 'add-kb'
 
 function initialTheme(): Theme {
   const saved = localStorage.getItem(THEME_KEY) as Theme | null
@@ -80,6 +86,7 @@ export default function App() {
   })
   const [activeId, setActiveId] = useState<string>(() => threads[0]?.id ?? '')
   const [theme, setTheme] = useState<Theme>(() => initialTheme())
+  const [view, setView] = useState<View>('chat')
   const threadRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
@@ -135,6 +142,7 @@ export default function App() {
 
   function startNewThread() {
     if (busy) return
+    setView('chat')
     const existingEmpty = threads.find((t) => t.turns.length === 0)
     if (existingEmpty) {
       setActiveId(existingEmpty.id)
@@ -179,7 +187,7 @@ export default function App() {
     stickToBottomRef.current = true
 
     try {
-      const res = await fetch('/api/chat/stream', {
+      const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ messages: newMessages, k: 5 }),
@@ -236,13 +244,22 @@ export default function App() {
           <button className="new-chat" onClick={startNewThread} disabled={busy}>
             + New chat
           </button>
+          <button
+            className={`add-kb-btn ${view === 'add-kb' ? 'active' : ''}`}
+            onClick={() => setView('add-kb')}
+          >
+            + Add to KB
+          </button>
         </div>
         <nav className="thread-list">
           {sortedThreads.map((t) => (
             <div
               key={t.id}
-              className={`thread-item ${t.id === activeId ? 'active' : ''}`}
-              onClick={() => setActiveId(t.id)}
+              className={`thread-item ${view === 'chat' && t.id === activeId ? 'active' : ''}`}
+              onClick={() => {
+                setView('chat')
+                setActiveId(t.id)
+              }}
             >
               <span className="thread-title">{t.title}</span>
               <button
@@ -261,9 +278,9 @@ export default function App() {
         </nav>
       </aside>
 
-      <main className="app">
+      <main className={`app ${view === 'add-kb' ? 'add-kb' : ''}`}>
         <header>
-          <h1>Stanford Knowledge Base</h1>
+          <h1>{view === 'add-kb' ? 'Add to Knowledge Base' : 'Stanford Knowledge Base'}</h1>
           <button
             className="theme-toggle"
             onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
@@ -283,6 +300,10 @@ export default function App() {
           </button>
         </header>
 
+        {view === 'add-kb' ? (
+          <AddToKB />
+        ) : (
+        <>
         <div ref={threadRef} className="thread" onScroll={onThreadScroll}>
           {turns.length === 0 && (
             <div className="hint">
@@ -365,6 +386,8 @@ export default function App() {
             {busy ? '…' : 'Send'}
           </button>
         </form>
+        </>
+        )}
       </main>
     </div>
   )

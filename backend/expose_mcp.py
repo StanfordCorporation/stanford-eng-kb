@@ -1,13 +1,16 @@
 """FastMCP server exposing the knowledge base as MCP tools.
 
-Run:  python expose_mcp.py
+Run locally from the project root:
+
+    python -m backend.expose_mcp
+
 Then wire the stdio command into any MCP client (Claude Desktop, Cursor, etc.).
 """
 
 from fastmcp import FastMCP
 
-from retrieval import hybrid_search
-from claude_answer import answer
+from backend.read.retrieval import hybrid_search
+from backend.read.claude_answer import answer
 
 mcp = FastMCP("stanford-eng-kb")
 

@@ -7,7 +7,7 @@ from anthropic import Anthropic
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from retrieval import hybrid_search
+from .retrieval import hybrid_search
 
 client = Anthropic()
 

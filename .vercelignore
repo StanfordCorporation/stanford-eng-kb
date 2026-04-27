@@ -1,0 +1,32 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Backend lives on Railway, not Vercel.
+api/
+backend/
+requirements.txt
+sql/
+Dockerfile
+railway.json
+.dockerignore
+
+# Obsidian notes are ingested locally into Postgres and not needed at runtime.
+vault/
+
+# Local-only tooling
+requirements-dev.txt
+
+# Node
+node_modules/
+frontEnd/node_modules/
+
+# VCS + editor
+.git/
+.github/
+.vscode/
+.idea/
