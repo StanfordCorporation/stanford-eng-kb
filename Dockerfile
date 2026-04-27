@@ -14,6 +14,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# CPU-only PyTorch first. sentence-transformers pulls torch as a transitive
+# dep, and the default wheel ships full CUDA/cuDNN (~2.5 GB of NVIDIA libs we
+# never use). Installing the CPU build first satisfies the requirement so the
+# pip install below doesn't pull the GPU version. Saves ~2.5 GB → fits well
+# under Railway's 4 GB image limit.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch
+
 COPY requirements.txt .
 # hf_transfer (Rust-based) gives faster, more reliable HF downloads during the build.
 # Build-time only — no runtime impact, so kept out of requirements.txt.
