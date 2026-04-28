@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
   "installCommand": "cd frontEnd && npm ci",
   "buildCommand": "cd frontEnd && npm run build",
   "outputDirectory": "frontEnd/dist",
