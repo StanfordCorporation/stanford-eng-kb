@@ -390,33 +390,10 @@ export default function App() {
                 {t.phase === 'error' ? (
                   <div className="error">{t.error}</div>
                 ) : (
-                  <>
-                    <div className="md">
-                      <ReactMarkdown>{t.content}</ReactMarkdown>
-                      {t.phase === 'streaming' && <span className="caret" />}
-                    </div>
-
-                    {t.sources.length > 0 && (
-                      <details className="sources-details">
-                        <summary>
-                          {t.sources.length} source{t.sources.length === 1 ? '' : 's'}
-                        </summary>
-                        {t.rewrittenQuery && (
-                          <div className="rewritten">
-                            Searched for: <em>{t.rewrittenQuery}</em>
-                          </div>
-                        )}
-                        <ol className="sources">
-                          {t.sources.map((s) => (
-                            <li key={s.n}>
-                              <code>{s.source}</code>
-                              <span className="score">{s.score.toFixed(4)}</span>
-                            </li>
-                          ))}
-                        </ol>
-                      </details>
-                    )}
-                  </>
+                  <div className="md">
+                    <ReactMarkdown>{t.content}</ReactMarkdown>
+                    {t.phase === 'streaming' && <span className="caret" />}
+                  </div>
                 )}
               </div>
             )

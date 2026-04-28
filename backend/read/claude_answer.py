@@ -53,12 +53,15 @@ def rewrite_query(messages: list[dict]) -> str:
 
 
 def _build_prompt(hits, query):
+    # Numbered context blocks help the model align its answer with specific
+    # passages internally, even though we no longer ask it to surface [n] citations.
     context = "\n\n".join(
         f"[{i+1}] source={h['metadata'].get('source')}\n{h['content']}"
         for i, h in enumerate(hits)
     )
-    return f"""Answer the question using ONLY the context below. Cite sources inline
-using the [n] numbers. If the answer is not in the context, say so.
+    return f"""Answer the question using ONLY the context below. If the answer is
+not in the context, say so. Do not include citation numbers, source paths, or
+any reference markers in your reply — answer in plain prose.
 
 Context:
 {context}
@@ -100,11 +103,14 @@ def stream_answer(query: str, k: int = 5, *, org_id: str | None = None, sub_id: 
     yield {"type": "done"}
 
 
-CHAT_SYSTEM = """You are a knowledge-base assistant answering questions about the user's \
-Obsidian vault. For the LATEST user question, answer using ONLY the context provided \
-below. Cite sources inline using [n] numbers matching the context. If the answer is not \
-in the context, say so. Use prior conversation turns only for pronoun resolution and \
-follow-up intent — do not invent facts from them.
+CHAT_SYSTEM = """You are a knowledge-base assistant. For the LATEST user question, \
+answer using ONLY the context provided below. If the answer is not in the context, say so. \
+Use prior conversation turns only for pronoun resolution and follow-up intent — do not \
+invent facts from them.
+
+Important: do NOT include citation numbers like [1] [2], source paths, file names, or any \
+reference markers in your reply. Answer in plain prose. The context's [n] indices are for \
+your internal alignment only and must never appear in the output.
 
 Context for the latest question:
 {context}"""
