@@ -210,6 +210,32 @@
   font-weight: 500;
 }
 
+.turn.assistant .label.pulsing {
+  animation: label-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes label-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
+}
+
+.composer .stop-btn {
+  padding: 0 1.4rem;
+  font: inherit;
+  font-weight: 500;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.composer .stop-btn:hover {
+  background: var(--hover-bg);
+  border-color: var(--text-subtle);
+}
+
 .md {
   line-height: 1.6;
   max-width: 100%;

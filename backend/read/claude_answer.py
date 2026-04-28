@@ -129,8 +129,15 @@ def stream_chat(
     if not messages or messages[-1].get("role") != "user":
         raise ValueError("messages must be non-empty and end with a user turn")
 
+    # Acknowledge the connection immediately so the UI can transition out of
+    # the generic "thinking" state — even on a cold start this lands in <100ms.
+    yield {"type": "status", "stage": "rewriting"}
+
     latest = messages[-1]["content"]
     search_query = rewrite_query(messages)
+
+    yield {"type": "status", "stage": "searching"}
+
     hits = hybrid_search(search_query, k=k, org_id=org_id, sub_id=sub_id)
     yield {
         "type": "sources",

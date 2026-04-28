@@ -5,6 +5,7 @@ import { API_BASE, ORGS } from './lib'
 import './App.css'
 
 type Source = { n: number; source: string; score: number }
+type Stage = 'thinking' | 'rewriting' | 'searching'
 
 type Turn =
   | { role: 'user'; content: string }
@@ -14,6 +15,8 @@ type Turn =
       sources: Source[]
       rewrittenQuery?: string | null
       phase: 'retrieving' | 'streaming' | 'done' | 'error'
+      stage?: Stage
+      startedAt?: number
       error?: string
     }
 
@@ -25,9 +28,11 @@ type Thread = {
 }
 
 type StreamEvent =
+  | { type: 'status'; stage: Stage }
   | { type: 'sources'; sources: Source[]; rewritten_query?: string | null }
   | { type: 'delta'; text: string }
   | { type: 'done' }
+  | { type: 'error'; message: string }
 
 const STORAGE_KEY = 'stanford-kb-threads-v1'
 const THEME_KEY = 'stanford-kb-theme'
@@ -83,6 +88,24 @@ function loadThreads(): Thread[] {
   }
 }
 
+// Human-readable label for the in-flight assistant turn before any tokens stream.
+// `stage` comes from the backend's status SSE event; `startedAt` is the local
+// timestamp set when the turn was created. The "(Ns)" tail is appended after
+// 3 seconds so quick chats don't show a counter for normal latency.
+function retrievingLabel(stage: Stage | undefined, startedAt: number | undefined): string {
+  const base =
+    stage === 'searching'
+      ? 'Searching the knowledge base'
+      : stage === 'rewriting'
+      ? 'Understanding your question'
+      : 'Thinking'
+  if (!startedAt) return `${base}…`
+  const secs = Math.floor((Date.now() - startedAt) / 1000)
+  if (secs < 3) return `${base}…`
+  if (secs < 20) return `${base}… (${secs}s)`
+  return `${base}… (${secs}s — taking longer than usual)`
+}
+
 function deriveTitle(turns: Turn[]): string {
   const first = turns.find((t) => t.role === 'user')
   if (!first) return 'New chat'
@@ -103,6 +126,9 @@ export default function App() {
   const [activeSub, setActiveSub] = useState<string | null>(() => initialActiveSub(initialActiveOrg()))
   const threadRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
+  const abortRef = useRef<AbortController | null>(null)
+  // Tick once a second while a turn is in flight so the elapsed-time label updates.
+  const [, forceTick] = useState(0)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -130,6 +156,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(threads))
   }, [threads])
+
+  // While a turn is in flight, re-render once a second so the "(Ns)" elapsed
+  // label keeps moving. Cheap; the rest of the tree memos away.
+  useEffect(() => {
+    if (!busy) return
+    const id = setInterval(() => forceTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [busy])
 
   useEffect(() => {
     const el = threadRef.current
@@ -206,10 +240,20 @@ export default function App() {
     updateActive((prev) => [
       ...prev,
       { role: 'user', content: q },
-      { role: 'assistant', content: '', sources: [], phase: 'retrieving' },
+      {
+        role: 'assistant',
+        content: '',
+        sources: [],
+        phase: 'retrieving',
+        stage: 'thinking',
+        startedAt: Date.now(),
+      },
     ])
     setQuery('')
     stickToBottomRef.current = true
+
+    const ac = new AbortController()
+    abortRef.current = ac
 
     try {
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
@@ -221,6 +265,7 @@ export default function App() {
           org_id: activeOrg,
           sub_id: activeSub,
         }),
+        signal: ac.signal,
       })
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
 
@@ -241,28 +286,48 @@ export default function App() {
           if (!frame.startsWith('data: ')) continue
 
           const event: StreamEvent = JSON.parse(frame.slice(6))
-          if (event.type === 'sources') {
+          if (event.type === 'status') {
+            updateAssistant((t) => ({ ...t, stage: event.stage }))
+          } else if (event.type === 'sources') {
             updateAssistant((t) => ({
               ...t,
               sources: event.sources,
               rewrittenQuery: event.rewritten_query ?? null,
               phase: 'streaming',
+              stage: undefined,
             }))
           } else if (event.type === 'delta') {
             acc += event.text
             updateAssistant((t) => ({ ...t, content: acc }))
           } else if (event.type === 'done') {
             updateAssistant((t) => ({ ...t, phase: 'done' }))
+          } else if (event.type === 'error') {
+            updateAssistant((t) => ({ ...t, phase: 'error', error: event.message }))
           }
         }
       }
     } catch (err) {
-      updateAssistant((t) => ({
-        ...t,
-        phase: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      }))
+      // User-initiated abort: end the turn cleanly without surfacing as an error.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        updateAssistant((t) => ({
+          ...t,
+          phase: t.content ? 'done' : 'error',
+          error: t.content ? undefined : 'Stopped',
+        }))
+      } else {
+        updateAssistant((t) => ({
+          ...t,
+          phase: 'error',
+          error: err instanceof Error ? err.message : String(err),
+        }))
+      }
+    } finally {
+      abortRef.current = null
     }
+  }
+
+  function stopGeneration() {
+    abortRef.current?.abort()
   }
 
   const sortedThreads = [...threads].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -380,8 +445,8 @@ export default function App() {
               </div>
             ) : (
               <div key={i} className="turn assistant">
-                <div className="label">
-                  {t.phase === 'retrieving' && 'Searching vault…'}
+                <div className={`label ${t.phase === 'retrieving' ? 'pulsing' : ''}`}>
+                  {t.phase === 'retrieving' && retrievingLabel(t.stage, t.startedAt)}
                   {t.phase === 'streaming' && 'Claude'}
                   {t.phase === 'done' && 'Claude'}
                   {t.phase === 'error' && 'Error'}
@@ -421,9 +486,20 @@ export default function App() {
               }
             }}
           />
-          <button type="submit" disabled={busy || !query.trim()}>
-            {busy ? '…' : 'Send'}
-          </button>
+          {busy ? (
+            <button
+              type="button"
+              className="stop-btn"
+              onClick={stopGeneration}
+              title="Stop generating"
+            >
+              Stop
+            </button>
+          ) : (
+            <button type="submit" disabled={!query.trim()}>
+              Send
+            </button>
+          )}
         </form>
         </>
         )}
