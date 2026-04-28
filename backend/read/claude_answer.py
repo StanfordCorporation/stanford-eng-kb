@@ -1,5 +1,6 @@
 """Answer a question against the knowledge base using Claude + retrieved context."""
 
+import logging
 import sys
 
 from anthropic import Anthropic
@@ -8,6 +9,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from .retrieval import hybrid_search
+
+logger = logging.getLogger(__name__)
 
 client = Anthropic()
 
@@ -45,6 +48,7 @@ def rewrite_query(messages: list[dict]) -> str:
         return rewritten or messages[-1]["content"]
     except Exception:
         # Never fail the request on a rewrite error — fall back to the raw latest turn.
+        logger.warning("rewrite_query.failed — falling back to raw turn", exc_info=True)
         return messages[-1]["content"]
 
 

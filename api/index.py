@@ -6,13 +6,22 @@ Local dev:
 """
 
 import json
+import logging
 import os
 
 from dotenv import load_dotenv
 
-# Load .env for local dev. On Railway/Vercel, env vars come from the platform —
+# Load .env for local dev. On Vercel, env vars come from the platform —
 # load_dotenv silently no-ops when there's no .env file.
 load_dotenv()
+
+# Single root logging config for the whole function. Vercel captures stdout/stderr
+# and surfaces them under Deployments → latest → Functions → api/index.py.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,10 +116,19 @@ def ask_stream(req: AskRequest):
 @app.post("/api/chat/stream")
 def chat_stream(req: ChatRequest):
     history = [m.model_dump() for m in req.messages]
+    logger.info(
+        "chat.request org=%s sub=%s turns=%d k=%d",
+        req.org_id, req.sub_id, len(history), req.k,
+    )
 
     def sse():
-        for event in stream_chat(history, k=req.k, org_id=req.org_id, sub_id=req.sub_id):
-            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            for event in stream_chat(history, k=req.k, org_id=req.org_id, sub_id=req.sub_id):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception:
+            logger.exception("chat.stream_failed org=%s", req.org_id)
+            err = {"type": "error", "message": "internal error — see server logs"}
+            yield f"data: {json.dumps(err)}\n\n"
 
     return StreamingResponse(
         sse(),
@@ -143,25 +161,50 @@ async def ingest_upload_route(
     if has_file == has_text:
         raise HTTPException(status_code=400, detail="provide exactly one of: file, text")
 
+    logger.info(
+        "ingest.request org=%s sub=%s mode=%s file=%s",
+        org_id, sub_id,
+        "file" if has_file else "text",
+        file.filename if has_file else None,  # type: ignore[union-attr]
+    )
+
     try:
         if has_file:
             data = await file.read()  # type: ignore[union-attr]
             if len(data) > MAX_UPLOAD_BYTES:
+                logger.warning(
+                    "ingest.too_large org=%s bytes=%d limit=%d",
+                    org_id, len(data), MAX_UPLOAD_BYTES,
+                )
                 raise HTTPException(
                     status_code=413,
                     detail=f"file exceeds {MAX_UPLOAD_BYTES} bytes",
                 )
-            return ingest_upload(
+            result = ingest_upload(
                 org_id=org_id,
                 sub_id=sub_id,
                 file_name=file.filename,  # type: ignore[union-attr]
                 file_bytes=data,
             )
-        return ingest_upload(org_id=org_id, sub_id=sub_id, text=text)
+        else:
+            result = ingest_upload(org_id=org_id, sub_id=sub_id, text=text)
+
+        logger.info(
+            "ingest.ok org=%s sub=%s source=%s chars=%d chunks=%d",
+            org_id, sub_id, result["source"], result["characters"], result["chunks"],
+        )
+        return result
     except UnsupportedFileType as e:
+        logger.warning("ingest.unsupported_type org=%s detail=%s", org_id, e)
         raise HTTPException(
             status_code=415,
             detail=f"{e}. Supported: {', '.join(SUPPORTED_EXTENSIONS)}",
         )
     except ValueError as e:
+        logger.warning("ingest.bad_request org=%s detail=%s", org_id, e)
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        # Catch-all so unexpected failures (OpenAI 5xx, DB connection drops, etc.)
+        # leave a traceback in Vercel logs instead of vanishing into a generic 500.
+        logger.exception("ingest.failed org=%s sub=%s", org_id, sub_id)
+        raise

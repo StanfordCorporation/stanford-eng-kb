@@ -6,6 +6,7 @@ deployed backend exposes; pipeline.py remains as an optional local CLI for
 one-time bulk seeding from a folder.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -16,6 +17,8 @@ from backend.shared.embedder import embed_documents
 
 from .chunker import chunk_text
 from .extractors import extract_text
+
+logger = logging.getLogger(__name__)
 
 
 def ingest_upload(
@@ -62,11 +65,18 @@ def ingest_upload(
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    logger.info(
+        "uploads.extracted org=%s sub=%s source=%s chars=%d",
+        org_id, sub_id, source, len(body),
+    )
+
     chunks = chunk_text(body, source=source, extra_metadata=base_meta)
     if not chunks:
         raise ValueError("Chunker produced no chunks")
+    logger.info("uploads.chunked source=%s chunks=%d", source, len(chunks))
 
     vectors = embed_documents([c.content for c in chunks])
+    logger.info("uploads.embedded source=%s vectors=%d", source, len(vectors))
     chunk_rows = [
         (c.source, c.chunk_idx, c.content, Json(c.metadata), v)
         for c, v in zip(chunks, vectors)
@@ -106,6 +116,11 @@ def ingest_upload(
             page_size=100,
         )
         conn.commit()
+
+    logger.info(
+        "uploads.persisted source=%s raw_id=%d chunks=%d",
+        source, raw_id, len(chunks),
+    )
 
     return {
         "raw_id": raw_id,

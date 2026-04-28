@@ -12,7 +12,11 @@ share the model + dim so vectors are comparable.
 Requires OPENAI_API_KEY in the environment.
 """
 
+import logging
+
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 MODEL_NAME = "text-embedding-3-small"
 EMBED_DIM = 384
@@ -32,11 +36,16 @@ def _get_client() -> OpenAI:
 def embed_documents(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
-    resp = _get_client().embeddings.create(
-        model=MODEL_NAME,
-        input=texts,
-        dimensions=EMBED_DIM,
-    )
+    try:
+        resp = _get_client().embeddings.create(
+            model=MODEL_NAME,
+            input=texts,
+            dimensions=EMBED_DIM,
+        )
+    except Exception:
+        # Don't swallow — re-raise after logging so the caller's traceback is preserved.
+        logger.exception("embedder.openai_failed count=%d model=%s", len(texts), MODEL_NAME)
+        raise
     # API returns one item per input, in the same order.
     return [item.embedding for item in resp.data]
 

@@ -10,8 +10,12 @@ Customers can't write to it through the UI; only the operator (via the bulk CLI)
 can put rows in the shared bucket.
 """
 
+import logging
+
 from backend.shared.connection import get_conn
 from backend.shared.embedder import embed_query
+
+logger = logging.getLogger(__name__)
 
 # RRF constant — 60 is the value from the original Cormack/Clarke paper.
 RRF_K = 60
@@ -101,6 +105,10 @@ def hybrid_search(
         rows.setdefault(doc_id, row)
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:k]
+    logger.info(
+        "retrieval.done org=%s sub=%s vector_hits=%d keyword_hits=%d returned=%d",
+        org_id, sub_id, len(vector_hits), len(keyword_hits), len(ranked),
+    )
     return [
         {
             "id": doc_id,
