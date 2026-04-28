@@ -16,8 +16,13 @@ import sys
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 
 from .extractors import SUPPORTED_EXTENSIONS
+
+# Read .env from the project root so API_URL / INGEST_TOKEN don't have to be
+# set in the shell — match the rest of the project's entry points.
+load_dotenv()
 
 
 def main(folder: str, org_id: str, sub_id: str) -> None:

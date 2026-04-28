@@ -3,6 +3,11 @@
 Multi-tenancy: queries MUST pass `org_id` to scope results to one tenant.
 Passing `org_id=None` disables the filter — only safe for admin / internal use,
 never on a customer-facing path.
+
+Shared content: rows with `metadata->>'org_id' = SHARED_ORG_ID` are visible to
+every tenant, regardless of sub_id. Used for cross-org seed/baseline content.
+Customers can't write to it through the UI; only the operator (via the bulk CLI)
+can put rows in the shared bucket.
 """
 
 from backend.shared.connection import get_conn
@@ -11,18 +16,30 @@ from backend.shared.embedder import embed_query
 # RRF constant — 60 is the value from the original Cormack/Clarke paper.
 RRF_K = 60
 
+# Sentinel org_id for cross-tenant content. Underscore prefix avoids collision
+# with any real org slug from the UI taxonomy.
+SHARED_ORG_ID = "_shared"
+
 
 def _tenant_filter(org_id: str | None, sub_id: str | None) -> tuple[str, tuple]:
-    """Build a SQL fragment + params for the org/sub WHERE conditions."""
-    clauses: list[str] = []
-    params: list = []
-    if org_id is not None:
-        clauses.append("metadata->>'org_id' = %s")
-        params.append(org_id)
-    if sub_id is not None:
-        clauses.append("metadata->>'sub_id' = %s")
-        params.append(sub_id)
-    return " and ".join(clauses), tuple(params)
+    """Build a SQL fragment + params for tenant scoping.
+
+    A row matches if EITHER:
+      • its org_id is the shared sentinel (universal content), OR
+      • its org_id matches the caller's org_id (and sub_id, if provided).
+    """
+    if org_id is None:
+        return "", ()
+
+    if sub_id is None:
+        clause = "(metadata->>'org_id' = %s OR metadata->>'org_id' = %s)"
+        return clause, (SHARED_ORG_ID, org_id)
+
+    clause = (
+        "(metadata->>'org_id' = %s "
+        "OR (metadata->>'org_id' = %s AND metadata->>'sub_id' = %s))"
+    )
+    return clause, (SHARED_ORG_ID, org_id, sub_id)
 
 
 def hybrid_search(
