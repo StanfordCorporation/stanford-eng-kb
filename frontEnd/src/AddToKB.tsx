@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { API_BASE, INGEST_TOKEN, ORGS } from './lib'
+import { API_BASE, ORGS } from './lib'
 
 type Mode = 'file' | 'text'
 type Status =
@@ -57,9 +57,10 @@ export default function AddToKB() {
 
     setStatus({ kind: 'submitting' })
     try {
+      // Auth comes from the session cookie set on login — no header needed.
       const res = await fetch(`${API_BASE}/api/ingest/upload`, {
         method: 'POST',
-        headers: INGEST_TOKEN ? { 'X-Ingest-Token': INGEST_TOKEN } : {},
+        credentials: 'include',
         body: form,
       })
       if (!res.ok) {

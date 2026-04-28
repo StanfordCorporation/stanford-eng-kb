@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import AddToKB from './AddToKB'
-import { API_BASE, ORGS } from './lib'
+import Login from './Login'
+import { API_BASE, ORGS, checkAuth, logout } from './lib'
 import './App.css'
 
 type Source = { n: number; source: string; score: number }
@@ -113,7 +114,10 @@ function deriveTitle(turns: Turn[]): string {
   return text.length > 40 ? text.slice(0, 40) + '…' : text
 }
 
+type AuthState = 'checking' | 'logged_out' | 'logged_in'
+
 export default function App() {
+  const [authState, setAuthState] = useState<AuthState>('checking')
   const [query, setQuery] = useState('')
   const [threads, setThreads] = useState<Thread[]>(() => {
     const loaded = loadThreads()
@@ -124,6 +128,24 @@ export default function App() {
   const [view, setView] = useState<View>('chat')
   const [activeOrg, setActiveOrg] = useState<string>(() => initialActiveOrg())
   const [activeSub, setActiveSub] = useState<string | null>(() => initialActiveSub(initialActiveOrg()))
+
+  // On mount, ask the backend whether our cookie is still valid. While we wait,
+  // render a minimal "checking" splash so the SPA doesn't flash either screen.
+  useEffect(() => {
+    let cancelled = false
+    checkAuth().then((ok) => {
+      if (cancelled) return
+      setAuthState(ok ? 'logged_in' : 'logged_out')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function onLogout() {
+    await logout()
+    setAuthState('logged_out')
+  }
   const threadRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const abortRef = useRef<AbortController | null>(null)
@@ -259,6 +281,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           messages: newMessages,
           k: 5,
@@ -267,6 +290,11 @@ export default function App() {
         }),
         signal: ac.signal,
       })
+      if (res.status === 401) {
+        // Session expired — bounce to the login screen.
+        setAuthState('logged_out')
+        return
+      }
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
 
       const reader = res.body.getReader()
@@ -331,6 +359,14 @@ export default function App() {
   }
 
   const sortedThreads = [...threads].sort((a, b) => b.updatedAt - a.updatedAt)
+
+  if (authState === 'checking') {
+    return <div className="auth-checking" />
+  }
+
+  if (authState === 'logged_out') {
+    return <Login onSuccess={() => setAuthState('logged_in')} />
+  }
 
   return (
     <div className="layout">
@@ -408,23 +444,32 @@ export default function App() {
       <main className={`app ${view === 'add-kb' ? 'add-kb' : ''}`}>
         <header>
           <h1>{view === 'add-kb' ? 'Add to Knowledge Base' : 'Stanford Knowledge Base'}</h1>
-          <button
-            className="theme-toggle"
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-          >
-            {theme === 'light' ? (
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="4" />
-                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-              </svg>
-            )}
-          </button>
+          <div className="header-actions">
+            <button
+              className="theme-toggle"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+            >
+              {theme === 'light' ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                </svg>
+              )}
+            </button>
+            <button
+              className="logout-btn"
+              onClick={onLogout}
+              title="Sign out"
+            >
+              Sign out
+            </button>
+          </div>
         </header>
 
         {view === 'add-kb' ? (

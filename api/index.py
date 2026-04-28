@@ -23,11 +23,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from backend.auth import SESSION_COOKIE_NAME, SESSION_MAX_AGE, make_session, verify_session
 from backend.read.retrieval import hybrid_search
 from backend.read.claude_answer import answer, stream_answer, stream_chat
 from backend.ingest.extractors import SUPPORTED_EXTENSIONS, UnsupportedFileType
@@ -51,14 +52,36 @@ app.add_middleware(
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN")
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
+SESSION_SECRET = os.environ.get("SESSION_SECRET")
+# Cookies are Secure on Vercel (HTTPS); on local dev they're not because Vite
+# serves over plain http://localhost.
+COOKIE_SECURE = bool(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV"))
 
 
-def _require_ingest_token(token: str | None) -> None:
-    if not INGEST_TOKEN:
-        # Misconfiguration: fail closed rather than silently allow everyone.
-        raise HTTPException(status_code=503, detail="ingest disabled (INGEST_TOKEN not set)")
-    if not token or token != INGEST_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid or missing ingest token")
+def require_session(session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)) -> None:
+    """Dependency that allows a request only if the session cookie is valid."""
+    if not SESSION_SECRET:
+        raise HTTPException(status_code=503, detail="auth disabled (SESSION_SECRET not set)")
+    if not verify_session(session, SESSION_SECRET):
+        raise HTTPException(status_code=401, detail="not authenticated")
+
+
+def require_session_or_ingest_token(
+    session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    x_ingest_token: str | None = Header(default=None),
+) -> None:
+    """Allow either a valid session cookie (SPA users) OR a matching INGEST_TOKEN
+    (the bulk-upload CLI). Both paths are accepted on /api/ingest/upload."""
+    # SPA path: signed cookie.
+    if SESSION_SECRET and verify_session(session, SESSION_SECRET):
+        return
+    # Service-to-service path: shared token.
+    if INGEST_TOKEN and x_ingest_token and x_ingest_token == INGEST_TOKEN:
+        return
+    if not SESSION_SECRET and not INGEST_TOKEN:
+        raise HTTPException(status_code=503, detail="auth disabled (no SESSION_SECRET or INGEST_TOKEN)")
+    raise HTTPException(status_code=401, detail="not authenticated")
 
 
 # ─── Request schemas (read path) ─────────────────────────────────────────────
@@ -88,18 +111,60 @@ class ChatRequest(BaseModel):
     sub_id: str | None = None
 
 
+# ─── Auth routes ─────────────────────────────────────────────────────────────
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1)
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest, response: Response):
+    if not APP_PASSWORD or not SESSION_SECRET:
+        raise HTTPException(status_code=503, detail="auth disabled (APP_PASSWORD or SESSION_SECRET not set)")
+    if req.password != APP_PASSWORD:
+        # Brief sleep would be ideal here against timing attacks, but FastAPI
+        # is sync; skip — single shared password makes timing attacks low-value.
+        logger.warning("auth.login_failed")
+        raise HTTPException(status_code=401, detail="invalid password")
+
+    token = make_session(SESSION_SECRET)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+    logger.info("auth.login_ok")
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    if not SESSION_SECRET or not verify_session(session, SESSION_SECRET):
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return {"authenticated": True}
+
+
 # ─── Routes (read path) ──────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
     return {"ok": True}
 
 
-@app.post("/api/ask")
+@app.post("/api/ask", dependencies=[Depends(require_session)])
 def ask(req: AskRequest):
     return answer(req.query, k=req.k, org_id=req.org_id, sub_id=req.sub_id)
 
 
-@app.post("/api/ask/stream")
+@app.post("/api/ask/stream", dependencies=[Depends(require_session)])
 def ask_stream(req: AskRequest):
     def sse():
         for event in stream_answer(req.query, k=req.k, org_id=req.org_id, sub_id=req.sub_id):
@@ -113,7 +178,7 @@ def ask_stream(req: AskRequest):
     )
 
 
-@app.post("/api/chat/stream")
+@app.post("/api/chat/stream", dependencies=[Depends(require_session)])
 def chat_stream(req: ChatRequest):
     history = [m.model_dump() for m in req.messages]
     logger.info(
@@ -137,7 +202,7 @@ def chat_stream(req: ChatRequest):
     )
 
 
-@app.post("/api/search")
+@app.post("/api/search", dependencies=[Depends(require_session)])
 def search(req: SearchRequest):
     return hybrid_search(req.query, k=req.k, org_id=req.org_id, sub_id=req.sub_id)
 
@@ -146,16 +211,13 @@ def search(req: SearchRequest):
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB — bump if customers need bigger.
 
 
-@app.post("/api/ingest/upload")
+@app.post("/api/ingest/upload", dependencies=[Depends(require_session_or_ingest_token)])
 async def ingest_upload_route(
     org_id: str = Form(...),
     sub_id: str = Form(...),
     text: str | None = Form(None),
     file: UploadFile | None = File(None),
-    x_ingest_token: str | None = Header(None),
 ):
-    _require_ingest_token(x_ingest_token)
-
     has_file = file is not None and bool(file.filename)
     has_text = text is not None and bool(text.strip())
     if has_file == has_text:

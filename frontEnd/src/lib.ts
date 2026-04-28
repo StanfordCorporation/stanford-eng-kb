@@ -1,15 +1,40 @@
 // Shared constants for the frontend.
 //
-// API_BASE: empty in dev (Vite proxies /api/* to the local backend); in prod,
-// set VITE_API_URL on Vercel to the Railway backend URL (no trailing slash).
+// API_BASE: empty in dev (Vite proxies /api/* to the local backend); in
+// single-Vercel deploys it's also empty (same-origin). Only set VITE_API_URL
+// when the backend lives on a different domain.
 export const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
-// Bearer token sent with /api/ingest/upload calls. The Railway backend rejects
-// requests without it. NOTE: this is bundled into the SPA, so anyone who can
-// load the page can read it. That's acceptable behind Vercel password
-// protection for soft launch; replace with a server-side proxy when you add
-// real per-user auth.
-export const INGEST_TOKEN = import.meta.env.VITE_INGEST_TOKEN ?? ''
+// ─── Auth API helpers ──────────────────────────────────────────────────────
+// All auth state lives in an HTTP-only cookie set by the backend. The SPA
+// just calls these and reacts to 200 / 401.
+
+export async function checkAuth(): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/api/auth/me`, { credentials: 'include' })
+  return res.ok
+}
+
+export async function login(password: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ password }),
+  })
+  if (res.ok) return { ok: true }
+  let message = `HTTP ${res.status}`
+  try {
+    const data = await res.json()
+    if (data?.detail) message = data.detail
+  } catch {
+    /* ignore */
+  }
+  return { ok: false, message }
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST', credentials: 'include' })
+}
 
 export type SubGroup = { id: string; name: string }
 export type Org = {

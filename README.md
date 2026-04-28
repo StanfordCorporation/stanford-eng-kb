@@ -56,7 +56,7 @@ stanford-eng-kb/
    pip install -r requirements.txt
    ```
 
-3. **Create `.env`** from [.env.example](.env.example). Fill in Supabase host/password, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `INGEST_TOKEN` (a long random string). `VITE_INGEST_TOKEN` is frontend-side and only needed at build time on Vercel.
+3. **Create `.env`** from [.env.example](.env.example). Required: Supabase host/password, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `APP_PASSWORD` (shared login password), `SESSION_SECRET` (a long random string for cookie signing), and `INGEST_TOKEN` (used only by the bulk-upload CLI; the SPA uses the session cookie set at login).
 
 4. **Create the schema.** Supabase → SQL Editor → paste and run [sql/schema.sql](sql/schema.sql). The script is idempotent — safe to re-run after pulling new migrations.
 
@@ -111,11 +111,12 @@ Embeddings via OpenAI; chat answers via Anthropic Claude. The Python backend fit
    - `SUPABASE_DB_PASSWORD`
    - `OPENAI_API_KEY`
    - `ANTHROPIC_API_KEY`
-   - `INGEST_TOKEN` — a long random string. Without it, `/api/ingest/upload` returns 503.
-   - `VITE_INGEST_TOKEN` — **same value** as `INGEST_TOKEN`. Bundled into the SPA so the upload form can send it. Safe behind Vercel password protection only.
+   - `APP_PASSWORD` — the shared login password users enter on the in-app sign-in screen.
+   - `SESSION_SECRET` — long random string for HMAC-signing session cookies. Rotate to invalidate every active session at once. `python -c "import secrets; print(secrets.token_urlsafe(48))"`
+   - `INGEST_TOKEN` — only used by the bulk-upload CLI. SPA users authenticate via the session cookie set at login.
 3. Deploy. The build runs `npm ci && npm run build` for the SPA and bundles the Python function from `requirements.txt` automatically.
-4. Smoke test: `curl https://<your-app>.vercel.app/api/health` → `{"ok":true}`.
-5. **Project → Deployment Protection** → enable password protection while in soft launch (no per-user auth yet).
+4. Smoke test: `curl https://<your-app>.vercel.app/api/health` → `{"ok":true}`. Then open the URL — you'll get the in-app sign-in screen.
+5. **Vercel Deployment Protection is no longer required** once `APP_PASSWORD` is set. Disable it (or leave on as belt-and-suspenders during soft launch).
 
 ### 2. Seed the data
 
@@ -145,3 +146,4 @@ The CLI POSTs each supported file to `/api/ingest/upload` — same code path as 
 - **Shared content**: rows tagged `metadata->>'org_id' = '_shared'` (the `SHARED_ORG_ID` sentinel) bypass the tenant filter and appear in every customer's chat. The "+ Add to KB" UI can only write to a real org; only the operator can put rows in the shared bucket via the bulk CLI: `python -m backend.ingest.pipeline ./folder _shared _shared`. Use sparingly — anything in the shared bucket is visible to every tenant.
 - **Upload audit log**: every upload also writes a single row to `documents_raw` with the full extracted text + tenancy metadata. Lets us re-chunk later without re-uploading and gives customers a "download my data" path if asked.
 - **Single ingest path**: customer uploads go straight to pgvector; there is no GitHub vault, no clone-on-Railway, no second source of truth. The bulk-upload CLI in [backend/ingest/pipeline.py](backend/ingest/pipeline.py) is a thin client that hits the same `/api/ingest/upload` endpoint — used only for one-time seeding, never by the deployed backend.
+- **Auth**: a single shared password (`APP_PASSWORD`) gates the SPA. On login, the backend sets an HMAC-signed HTTP-only cookie (`session`) using `SESSION_SECRET`. All read/write API routes require a valid cookie; `/api/ingest/upload` additionally accepts the legacy `INGEST_TOKEN` header so the bulk CLI keeps working. There is no per-user identity yet — when we add per-org or per-user auth, the cookie payload (currently just `{v, iat}`) is where that goes. See [backend/auth.py](backend/auth.py).
