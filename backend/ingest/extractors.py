@@ -40,7 +40,8 @@ def _extract_pdf(data: bytes) -> str:
 
 
 def _extract_docx(data: bytes) -> str:
-    from docx import Document  # python-docx
+    # docx2txt is a ~10 KB pure-Python lib. We use it instead of python-docx
+    # to avoid pulling lxml (~30 MB unzipped) into the Vercel function bundle.
+    import docx2txt
 
-    doc = Document(BytesIO(data))
-    return "\n".join(p.text for p in doc.paragraphs).strip()
+    return (docx2txt.process(BytesIO(data)) or "").strip()
