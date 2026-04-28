@@ -1,0 +1,13 @@
+# Local-only dependencies. NOT bundled into the Vercel function.
+#
+# Install:  pip install -r requirements.txt -r requirements-dev.txt
+#
+# - uvicorn[standard]: local ASGI dev server. Vercel runs api/index.py:app
+#   directly via @vercel/python, so this is not needed in production.
+# - fastmcp: powers backend/expose_mcp.py for Claude Desktop / Cursor.
+# - httpx: used by the bulk-upload CLI (backend/ingest/pipeline.py) to POST
+#   to /api/ingest/upload. The CLI runs from your laptop, not Vercel.
+
+uvicorn[standard]>=0.30.0
+fastmcp>=0.2.0
+httpx>=0.27.0
